@@ -375,7 +375,7 @@ def add_budget(budget):
     _execute(cursor,
         "INSERT OR REPLACE INTO budgets (id, user_id, category, limit_amount) VALUES (%s, %s, %s, %s)" if not USE_POSTGRES else
         "INSERT INTO budgets (id, user_id, category, limit_amount) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id, category) DO UPDATE SET limit_amount=EXCLUDED.limit_amount",
-        (budget["id"], budget["user_id"], budget["category"], budget["limit"]))
+        (budget["id"], budget["user_id"], budget["category"], budget["limit_amount"]))
     conn.commit()
     conn.close()
     return budget
