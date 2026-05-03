@@ -28,9 +28,11 @@ def get_connection():
 
 
 def _execute(cursor, sql: str, params=()):
-    """Execute SQL, translating ? placeholders to %s for PostgreSQL."""
+    """Execute SQL, normalizing placeholders for the active database."""
     if USE_POSTGRES:
         sql = sql.replace("?", "%s")
+    else:
+        sql = sql.replace("%s", "?")
     cursor.execute(sql, params)
 
 
