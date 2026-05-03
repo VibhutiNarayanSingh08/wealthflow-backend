@@ -3,6 +3,9 @@ WealthFlow FastAPI Backend — Production Ready
 JWT Auth, user-scoped data, PWA static files.
 """
 import os
+import time
+import uuid
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -11,13 +14,32 @@ import bcrypt
 import jwt
 import requests
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 import database
+
+# Simple in-memory rate limiter: {client_ip: [(timestamp, count)]}
+_rate_limit_store = defaultdict(list)
+RATE_LIMIT_WINDOW = 60  # seconds
+RATE_LIMIT_MAX = 60     # requests per window
+
+
+def _is_rate_limited(client_ip: str) -> bool:
+    now = time.time()
+    window_start = now - RATE_LIMIT_WINDOW
+    # Keep only requests in the current window
+    _rate_limit_store[client_ip] = [
+        (ts, cnt) for ts, cnt in _rate_limit_store[client_ip] if ts > window_start
+    ]
+    total = sum(cnt for ts, cnt in _rate_limit_store[client_ip])
+    if total >= RATE_LIMIT_MAX:
+        return True
+    _rate_limit_store[client_ip].append((now, 1))
+    return False
 
 load_dotenv()
 
@@ -26,6 +48,46 @@ print(f"[WealthFlow] DATABASE_URL set: {bool(os.getenv('DATABASE_URL'))}")
 print(f"[WealthFlow] Using PostgreSQL: {database.USE_POSTGRES}")
 
 app = FastAPI(title="WealthFlow API")
+
+# Request logging + rate limiting middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    request_id = str(uuid.uuid4())[:8]
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # Rate limiting (skip health checks)
+    if not request.url.path.endswith("/health"):
+        if _is_rate_limited(client_ip):
+            print(f"[{request_id}] RATE LIMITED | {client_ip} | {request.method} {request.url.path}")
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded. Try again later."},
+                headers={"X-Request-ID": request_id, "Retry-After": str(RATE_LIMIT_WINDOW)}
+            )
+    
+    start = time.time()
+    method = request.method
+    path = request.url.path
+    
+    response = await call_next(request)
+    
+    duration = round((time.time() - start) * 1000, 2)
+    status_code = response.status_code
+    
+    # Try to extract user_id from auth header for logging
+    user_id = "-"
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            token = auth.split(" ")[1]
+            payload = jwt.decode(token, os.getenv("JWT_SECRET", "secret"), algorithms=["HS256"], options={"verify_exp": False})
+            user_id = payload.get("sub", "-")
+        except Exception:
+            pass
+    
+    print(f"[{request_id}] {method} {path} | user:{user_id} | {status_code} | {duration}ms")
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 # CORS: restrict to your frontend domains in production
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
@@ -243,8 +305,13 @@ class Investment(BaseModel):
 
 
 @app.get("/api/investments")
-def list_investments(user_id: int = Depends(get_current_user)):
-    return database.get_investments(user_id)
+def list_investments(
+    user_id: int = Depends(get_current_user),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0)
+):
+    rows = database.get_investments(user_id)
+    return rows[offset:offset + limit]
 
 
 @app.post("/api/investments")
@@ -274,8 +341,13 @@ class Expense(BaseModel):
 
 
 @app.get("/api/expenses")
-def list_expenses(user_id: int = Depends(get_current_user)):
-    return database.get_expenses(user_id)
+def list_expenses(
+    user_id: int = Depends(get_current_user),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0)
+):
+    rows = database.get_expenses(user_id)
+    return rows[offset:offset + limit]
 
 
 @app.post("/api/expenses")
@@ -315,8 +387,13 @@ class RecurringExpense(BaseModel):
 
 
 @app.get("/api/recurring")
-def list_recurring(user_id: int = Depends(get_current_user)):
-    return database.get_recurring_expenses(user_id)
+def list_recurring(
+    user_id: int = Depends(get_current_user),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0)
+):
+    rows = database.get_recurring_expenses(user_id)
+    return rows[offset:offset + limit]
 
 
 @app.post("/api/recurring")
@@ -349,11 +426,15 @@ class Budget(BaseModel):
 
 
 @app.get("/api/budgets")
-def list_budgets(user_id: int = Depends(get_current_user)):
+def list_budgets(
+    user_id: int = Depends(get_current_user),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0)
+):
     rows = database.get_budgets(user_id)
     for row in rows:
         row["limit"] = row.pop("limit_amount")
-    return rows
+    return rows[offset:offset + limit]
 
 
 @app.post("/api/budgets")
