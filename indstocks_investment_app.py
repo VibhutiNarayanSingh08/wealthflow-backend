@@ -8,7 +8,10 @@ import requests
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
-import pandas as pd
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 
 class IndStocksInvestment:
     def __init__(self, access_token: str):
