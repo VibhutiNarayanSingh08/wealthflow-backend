@@ -21,6 +21,10 @@ import database
 
 load_dotenv()
 
+# Startup diagnostics
+print(f"[WealthFlow] DATABASE_URL set: {bool(os.getenv('DATABASE_URL'))}")
+print(f"[WealthFlow] Using PostgreSQL: {database.USE_POSTGRES}")
+
 app = FastAPI(title="WealthFlow API")
 
 # CORS: restrict to your frontend domains in production
@@ -124,7 +128,21 @@ def me(user_id: int = Depends(get_current_user)):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "indstocks_connected": bool(INDSTOCKS_TOKEN)}
+    db_ok = False
+    try:
+        conn = database.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        db_ok = True
+        conn.close()
+    except Exception as e:
+        print(f"[Health] DB check failed: {e}")
+    return {
+        "status": "ok",
+        "db_connected": db_ok,
+        "db_type": "postgres" if database.USE_POSTGRES else "sqlite",
+        "indstocks_connected": bool(INDSTOCKS_TOKEN)
+    }
 
 
 # ==================== INDSTOCKS PROXY ====================
